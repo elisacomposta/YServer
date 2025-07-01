@@ -27,14 +27,22 @@ class User_mgmt(UserMixin, db.Model):
     toxicity = db.Column(db.String(10), default="no")
     is_page = db.Column(db.Integer, default=0)
     left_on = db.Column(db.Integer, default=None)
+    original_id = db.Column(db.Integer, default=None)
+    toxicity_post_avg = db.Column(db.REAL, default=0)
+    toxicity_post_var = db.Column(db.REAL, default=0)
+    toxicity_comment = db.Column(db.REAL, default=0)
+    activity_post = db.Column(db.REAL, default=0)
+    activity_comment = db.Column(db.REAL, default=0)
+    is_misinfo = db.Column(db.Integer, default=0)
+    susceptibility = db.Column(db.REAL, default=0)
 
     posts = db.relationship("Post", backref="author", lazy=True)
     liked = db.relationship("Reactions", backref="liked_by", lazy=True)
 
-
 class Post(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     tweet = db.Column(db.String(500), nullable=False)
+    tweet_loc = db.Column(db.String(50), nullable=False)
     round = db.Column(db.Integer, nullable=False)
     post_img = db.Column(db.String(20))
     user_id = db.Column(db.Integer, db.ForeignKey("user_mgmt.id"), nullable=False)
@@ -194,3 +202,25 @@ class Post_Toxicity(db.Model):
     sexually_explicit = db.Column(db.REAL, default=0)
     flirtation = db.Column(db.REAL, default=0)
 
+class Coalitions(db.Model):
+    __tablename__ = "coalitions"
+    id = db.Column(db.Integer, primary_key=True)
+    coalition = db.Column(db.String(50), nullable=False)
+
+class Coalition_Opinion(db.Model):
+    __tablename__ = "coalition_opinion"
+    id = db.Column(db.Integer, primary_key=True)
+    coalition_id = db.Column(db.Integer, db.ForeignKey("coalitions.id"), nullable=False)
+    interest_id = db.Column(db.Integer, db.ForeignKey("interests.iid"), nullable=False)
+    score = db.Column(db.REAL, default=0)
+    description = db.Column(db.String(500), nullable=True)
+
+class User_opinions(db.Model):
+    __tablename__ = "user_opinions"
+    id = db.Column(db.Integer, primary_key=True)
+    score = db.Column(db.REAL, default=0) 
+    score_llm = db.Column(db.REAL, default=0)
+    user_id = db.Column(db.Integer, db.ForeignKey("user_mgmt.id"), nullable=False)
+    topic_id = db.Column(db.Integer, db.ForeignKey("interests.iid"), nullable=False)
+    round = db.Column(db.Integer, nullable=False)
+    description = db.Column(db.String(500), nullable=True)

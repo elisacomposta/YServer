@@ -9,7 +9,10 @@ def start_server(config):
     from y_server import app
     import nltk
 
-    nltk.download('vader_lexicon')
+    try:
+        from nltk.sentiment import SentimentIntensityAnalyzer
+    except LookupError:
+        nltk.download('vader_lexicon')
 
     debug = False
     app.config["perspective_api"] = config["perspective_api"]

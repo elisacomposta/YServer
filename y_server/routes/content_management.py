@@ -1,4 +1,5 @@
 import json
+import numpy as np
 from flask import request
 from y_server import app, db
 from sqlalchemy import desc
@@ -17,9 +18,10 @@ from y_server.modals import (
     Post_emotions,
     Post_topics,
     Post_Sentiment,
-    Interests
+    Interests,
 )
 from y_server.content_analysis import vader_sentiment, toxicity
+from y_server.translate import translate
 
 
 @app.route("/read", methods=["POST"])
@@ -229,15 +231,16 @@ def read():
     for post_type in posts:
         for post in post_type:
             try:
-                res.append(post[0].id)
+                post_id = post.id if hasattr(post, "id") else post[0].id
+
+                if db.session.query(Post).filter_by(id=post_id).first() is not None:
+                    res.append(post_id)
             except:
-                res.append(post.id)
+                pass
 
     # save recommendations
     current_round = Rounds.query.order_by(desc(Rounds.id)).first()
-    recs = Recommendations(
-        user_id=uid, post_ids="|".join([str(x) for x in res]), round=current_round.id
-    )
+    recs = Recommendations(user_id=uid, post_ids="|".join([str(x) for x in res]), round=current_round.id)
     db.session.add(recs)
     db.session.commit()
     return json.dumps(res)
@@ -328,7 +331,6 @@ def read_mention():
     else:
         return json.dumps({"status": 404})
 
-
 @app.route("/post", methods=["POST"])
 def add_post():
     """
@@ -338,19 +340,28 @@ def add_post():
     """
     data = json.loads(request.get_data())
     account_id = data["user_id"]
-    text = data["tweet"].strip('"')
+    text = data["tweet"]
     emotions = data["emotions"]
-    hastags = data["hashtags"]
+    hashtags = data["hashtags"]
     mentions = data["mentions"]
-    topics = data["topics"]
+    topic_ids = data["topics"] if "topics" in data else []
+    topic_names = data["topic_names"] if "topic_names" in data else []
     tid = int(data["tid"])
+    src_language = data["src_language"].lower()
+    tgt_language = data["tgt_language"].lower()
 
     user = User_mgmt.query.filter_by(id=account_id).first()
 
-    text = text.strip("-")
+    #text_en = translate(text, src_language, "english", translator="google")
+    sentiment = vader_sentiment(text)
+
+    #text_loc = translate(text, src_language, tgt_language)
+    text = f"{text} {' '.join(hashtags)}".strip()
+    #text_loc = f"{text_loc} {' '.join(hashtags)}".strip()
 
     post = Post(
         tweet=text,
+        tweet_loc='',
         round=tid,
         user_id=user.id,
         comment_to=-1,
@@ -359,14 +370,25 @@ def add_post():
     db.session.add(post)
     db.session.commit()
 
-    sentiment = vader_sentiment(text)
-
-    toxicity(text, app.config["perspective_api"], post.id, db)
+    #toxicity(text, app.config["perspective_api"], post.id, db)
 
     post.thread_id = post.id
     db.session.commit()
 
-    for topic_id in topics:
+    # if topics are provided by name, get ids
+    if len(topic_names) > 0:
+        topic_ids = []
+        for topic_name in topic_names:
+            tp = Interests.query.filter_by(interest=topic_name).first()
+            if tp is None:
+                tp = Interests(interest=topic_name)
+                db.session.add(tp)
+                db.session.commit()
+                tp = Interests.query.filter_by(interest=topic_name).first()
+
+            topic_ids.append(tp.iid)
+
+    for topic_id in topic_ids:
         tp = Post_topics(post_id=post.id, topic_id=topic_id)
         db.session.add(tp)
         db.session.commit()
@@ -395,7 +417,7 @@ def add_post():
             db.session.add(post_emotion)
             db.session.commit()
 
-    for tag in hastags:
+    for tag in hashtags:
         if len(tag) < 4:
             continue
 
@@ -421,20 +443,11 @@ def add_post():
             mn = Mentions(user_id=us.id, post_id=post.id, round=tid)
             db.session.add(mn)
             db.session.commit()
-        else:
-            text = text.replace(mention, "")
-
-            # update post
-            post.tweet = text.lstrip().rstrip()
-            db.session.commit()
 
     return json.dumps({"status": 200})
 
 
-@app.route(
-    "/comment",
-    methods=["POST", "GET"],
-)
+@app.route("/comment", methods=["POST", "GET"])
 def add_comment():
     """
     Comment on a post.
@@ -444,27 +457,16 @@ def add_comment():
     data = json.loads(request.get_data())
     account_id = data["user_id"]
     post_id = data["post_id"]
-    text = data["text"].strip('"')
+    text = data["text"]
     emotions = data["emotions"]
-    hastags = data["hashtags"]
+    hashtags = data["hashtags"]
     mentions = data["mentions"]
     tid = int(data["tid"])
+    src_language = data["src_language"].lower()
+    tgt_language = data["tgt_language"].lower()
 
     user = User_mgmt.query.filter_by(id=account_id).first()
     post = Post.query.filter_by(id=post_id).first()
-
-    text = text.strip("-")
-
-    new_post = Post(
-        tweet=text,
-        round=tid,
-        user_id=user.id,
-        comment_to=post_id,
-        thread_id=post.thread_id,
-    )
-
-    db.session.add(new_post)
-    db.session.commit()
 
     # get sentiment of the post is responding to
     sentiment_parent = Post_Sentiment.query.filter_by(post_id=post_id).first()
@@ -480,14 +482,36 @@ def add_comment():
     else:
         sentiment_parent = ""
 
+    #text_en = translate(text, src_language, "english", translator="google")
     sentiment = vader_sentiment(text)
+    
+    #text_loc = translate(text, src_language, tgt_language)
 
-    toxicity(text, app.config["perspective_api"], new_post.id, db)
+    text = f"{' '.join(mentions)} {text} {' '.join(hashtags)}".strip()
+    #text_loc = f"{' '.join(mentions)} {text_loc} {' '.join(hashtags)}".strip()
 
-    # get topics associated to post.id
+    new_post = Post(
+        tweet=text,
+        tweet_loc='',
+        round=tid,
+        user_id=user.id,
+        comment_to=post_id,
+        thread_id=post.thread_id,
+    )
+
+    db.session.add(new_post)
+    db.session.commit()
+
+    #toxicity(text, app.config["perspective_api"], new_post.id, db)
+
     post_topics = Post_topics.query.filter_by(post_id=post.thread_id).all()
     for topic in post_topics:
+        # Add post topic
+        tp = Post_topics(post_id=new_post.id, topic_id=topic.topic_id)
+        db.session.add(tp)
+        db.session.commit()
 
+        # Add sentiment to the comment
         post_sentiment = Post_Sentiment(
             post_id=new_post.id,
             user_id=user.id,
@@ -513,7 +537,7 @@ def add_comment():
             db.session.add(post_emotion)
             db.session.commit()
 
-    for tag in hastags:
+    for tag in hashtags:
         if len(tag) < 1:
             continue
 
@@ -553,10 +577,7 @@ def add_comment():
     return json.dumps({"status": 200})
 
 
-@app.route(
-    "/post_thread",
-    methods=["POST", "GET"],
-)
+@app.route("/post_thread", methods=["POST", "GET"])
 def post_thread():
     """
     Get the thread of a post.
@@ -569,41 +590,28 @@ def post_thread():
     post = Post.query.filter_by(id=post_id).first()
     thread_id = Post.query.filter_by(thread_id=post.thread_id)
 
-    res = []
+    tweets = []
+    author_latest_post = {}
 
     for post in thread_id:
         user = post.user_id
-        res.append(
-            f"@{User_mgmt.query.filter_by(id=user).first().username} - {post.tweet}\n"
-        )
-    return json.dumps(res)
+        username = User_mgmt.query.filter_by(id=user).first().username
+        tweets.append(f"@{username} - {post.tweet}\n")
 
+        # Save post id for the author if most recent
+        if username not in author_latest_post:
+            author_latest_post[username] = post.id
+        else:
+            if post.id > author_latest_post[username]:
+                author_latest_post[username] = post.id
 
-@app.route("/get_post_topics_name", methods=["GET", "POST"])
-def get_post_topics_name():
-    """
-    Get the topics of a post.
-
-    :return: a json object with the topics
-    """
-    data = json.loads(request.get_data())
-    post_id = data["post_id"]
-
-    post_topics = Post_topics.query.filter_by(post_id=post_id).all()
-
-    res = []
-    for topic in post_topics:
-        tp = Interests.query.filter_by(iid=topic.topic_id).first()
-        if tp is not None:
-            res.append(tp.interest)
-
-    return json.dumps(res)
+    return json.dumps({"tweets": tweets, "latest_post": author_latest_post})
 
 
 @app.route("/get_sentiment", methods=["POST", "GET"])
 def get_sentiment():
     """
-    Get the sentiment of a post.
+    Get the last sentiment on an interest.
 
     :return: a json object with the sentiment
     """
@@ -628,11 +636,7 @@ def get_sentiment():
 
     return json.dumps(res)
 
-
-@app.route(
-    "/get_post",
-    methods=["POST", "GET"],
-)
+@app.route("/get_post", methods=["POST", "GET"])
 def get_post():
     """
     Get the post.
@@ -644,13 +648,13 @@ def get_post():
 
     post = Post.query.filter_by(id=post_id).first()
 
+    if post is None:
+        return json.dumps({"error": "Post not found"}), 404
+
     return json.dumps(post.tweet)
 
 
-@app.route(
-    "/reaction",
-    methods=["POST"],
-)
+@app.route("/reaction", methods=["POST"])
 def add_reaction():
     """
     Add a reaction to a post/comment.
@@ -708,18 +712,20 @@ def add_reaction():
 @app.route("/get_post_topics", methods=["GET"])
 def get_post_topics():
     """
-    Get the topics of a post.
+    Get the topic ids and names of a post.
 
     :return: a json object with the topics
     """
     data = json.loads(request.get_data())
     post_id = data["post_id"]
 
-    post_topics = Post_topics.query.filter_by(post_id=post_id)
+    post_topics = Post_topics.query.filter_by(post_id=post_id).all()
 
     res = []
     for topic in post_topics:
-        res.append(topic.topic_id)
+        tp = Interests.query.filter_by(iid=topic.topic_id).first()
+        if tp is not None:
+            res.append({"id": topic.topic_id, "name": tp.interest})
 
     return json.dumps(res)
 
@@ -736,4 +742,24 @@ def get_thread_root():
 
     post = Post.query.filter_by(id=post_id).first()
 
+    if post is None:
+        return json.dumps({"error": "Post not found"}), 404
+
     return json.dumps(post.thread_id)
+
+@app.route("/get_post_author", methods=["GET"])
+def get_post_author():
+    """
+    Get the author of a post.
+
+    :return: a json object with the author
+    """
+    data = json.loads(request.get_data())
+    post_id = data["post_id"]
+
+    post = Post.query.filter_by(id=post_id).first()
+
+    if post is None:
+        return json.dumps({"error": "Post not found"}), 404
+
+    return json.dumps(post.user_id)

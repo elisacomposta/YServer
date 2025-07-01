@@ -2,7 +2,7 @@ import json
 from flask import request
 from y_server import app, db
 from sqlalchemy import desc
-from y_server.modals import Post, User_mgmt, Reactions, User_interest, Interests, Rounds
+from y_server.modals import Post, Post_topics, User_mgmt, Reactions, User_interest, Interests
 
 
 @app.route("/get_user_id", methods=["GET", "POST"])
@@ -35,33 +35,44 @@ def get_user():
 
     user = User_mgmt.query.filter_by(username=username, email=email).first()
 
-    return json.dumps(
-        {
-            "id": user.id,
-            "username": user.username,
-            "email": user.email,
-            "leaning": user.leaning,
-            "age": int(user.age),
-            "user_type": user.user_type,
-            "password": user.password,
-            "ag": user.ag,
-            "ne": user.ne,
-            "ex": user.ex,
-            "co": user.co,
-            "oe": user.oe,
-            "rec_sys": user.recsys_type,
-            "language": user.language,
-            "education_level": user.education_level,
-            "joined_on": user.joined_on,
-            "owner": user.owner,
-            "round_actions": user.round_actions,
-            "frec_sys": user.frecsys_type,
-            "gender": user.gender,
-            "nationality": user.nationality,
-            "toxicity": user.toxicity,
-            "is_page": user.is_page,
-        }
-    )
+    user_data = {
+        "id": user.id,
+        "username": user.username,
+        "email": user.email,
+        "leaning": user.leaning,
+        "age": int(user.age),
+        "user_type": user.user_type,
+        "password": user.password,
+        "ag": user.ag,
+        "ne": user.ne,
+        "ex": user.ex,
+        "co": user.co,
+        "oe": user.oe,
+        "rec_sys": user.recsys_type,
+        "language": user.language,
+        "education_level": user.education_level,
+        "joined_on": user.joined_on,
+        "owner": user.owner,
+        "round_actions": user.round_actions,
+        "frec_sys": user.frecsys_type,
+        "gender": user.gender,
+        "nationality": user.nationality,
+        "toxicity": user.toxicity,
+        "is_page": user.is_page,
+        "is_misinfo": user.is_misinfo,
+        "susceptibility": user.susceptibility,
+    }
+
+    optional_fields = [
+        "original_id", "toxicity_post_avg", "toxicity_post_var",
+        "toxicity_comment", "activity_post", "activity_comment"
+    ]
+
+    for field in optional_fields:
+        if hasattr(user, field):
+            user_data[field] = getattr(user, field)
+
+    return json.dumps(user_data)
 
 
 @app.route("/register", methods=["POST"])
@@ -72,57 +83,41 @@ def register():
     :return: a json object with the status of the registration
     """
     data = json.loads(request.get_data())
-    username = data["name"]
-    email = data["email"]
-    password = data["password"]
-
-    leaning = data["leaning"]
-    age = int(data["age"])
-    user_type = data["user_type"]
-    oe = data["oe"]
-    co = data["co"]
-    ex = data["ex"]
-    ag = data["ag"]
-    ne = data["ne"]
-    recsys_type = "default"
-    language = data["language"]
-    education_level = data["education_level"]
-    joined_on = int(data["joined_on"])
-    round_actions = int(data["round_actions"])
-    owner = data["owner"]
-    gender = data["gender"]
-    nationality = data["nationality"]
-    toxicity = data["toxicity"]
-    if "is_page" in data:
-        is_page = data["is_page"]
-    else:
-        is_page = 0
-
     user = User_mgmt.query.filter_by(username=data["name"], email=data["email"]).first()
+    is_page = 0 if "is_page" not in data else data["is_page"]
+    is_misinfo = 0 if "is_misinfo" not in data else data["is_misinfo"]
 
     if user is None:
         user = User_mgmt(
-            username=username,
-            email=email,
-            password=password,
-            leaning=leaning,
-            age=age,
-            user_type=user_type,
-            oe=oe,
-            co=co,
-            ex=ex,
-            ag=ag,
-            ne=ne,
-            recsys_type=recsys_type,
-            language=language,
-            education_level=education_level,
-            joined_on=joined_on,
-            round_actions=round_actions,
-            owner=owner,
-            gender=gender,
-            nationality=nationality,
-            toxicity=toxicity,
+            username=data["name"],
+            email=data["email"],
+            password=data["password"],
+            leaning=data["leaning"],
+            age=int(data["age"]),
+            user_type=data["user_type"],
+            oe=data["oe"],
+            co=data["co"],
+            ex=data["ex"],
+            ag=data["ag"],
+            ne=data["ne"],
+            recsys_type="default",
+            language=data["language"],
+            education_level=data["education_level"],
+            joined_on=int(data["joined_on"]),
+            round_actions=int(data["round_actions"]),
+            owner=data["owner"],
+            gender=data["gender"],
+            nationality=data["nationality"],
+            toxicity=data["toxicity"],
             is_page=is_page,
+            original_id=data["original_id"],
+            toxicity_post_avg=data["toxicity_post_avg"],
+            toxicity_post_var=data["toxicity_post_var"],
+            toxicity_comment=data["toxicity_comment"],
+            activity_post=data["activity_post"],
+            activity_comment=data["activity_comment"],
+            is_misinfo=is_misinfo,
+            susceptibility=data["susceptibility"],
         )
         db.session.add(user)
         try:
@@ -350,3 +345,45 @@ def get_user_interests():
         res.append({"id": int(interest[0]), "topic": interest.interest})
 
     return json.dumps(res)
+
+@app.route("/get_active_topics", methods=["GET"])
+def get_active_topics():
+    """
+    Get the active topic names of a user (from posts or reactions) within a time window.
+
+    :return: a json array of topic names
+    """
+    data = json.loads(request.get_data())
+    user_id = int(data["user_id"])
+    base_round = int(data["base_round"])
+    end_round = int(data["end_round"])
+
+    post_topics = (
+        db.session.query(Interests.interest)
+        .join(Post_topics, Post_topics.topic_id == Interests.iid)
+        .join(Post, Post.id == Post_topics.post_id)
+        .filter(
+            Post.user_id == user_id,
+            Post.round >= base_round,
+            Post.round <= end_round,
+        )
+    )
+
+    reaction_topics = (
+        db.session.query(Interests.interest)
+        .join(Post_topics, Post_topics.topic_id == Interests.iid)
+        .join(Post, Post.id == Post_topics.post_id)
+        .join(Reactions, Reactions.post_id == Post.id)
+        .filter(
+            Reactions.user_id == user_id,
+            Reactions.round >= base_round,
+            Reactions.round <= end_round,
+        )
+    )
+    all_topic_names = (
+        post_topics.union(reaction_topics)
+        .distinct()
+        .all()
+    )
+    topic_names = [topic[0] for topic in all_topic_names]
+    return json.dumps(topic_names)

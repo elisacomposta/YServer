@@ -3,10 +3,22 @@ from flask_sqlalchemy import SQLAlchemy
 import json
 import shutil
 import os
+from argparse import ArgumentParser
+
+# Parse arguments
+parser = ArgumentParser()
+parser.add_argument(
+    "-c",
+    "--config_file",
+    default=f"config_files{os.sep}exp_config.json",
+    help="JSON file describing the simulation configuration",
+)
+args = parser.parse_args()
+config_file = args.config_file
 
 try:
     # read the experiment configuration
-    config = json.load(open(f"config_files{os.sep}exp_config.json"))
+    config = json.load(open(config_file, "r"))
 
     # create the experiments folder
     if not os.path.exists(f".{os.sep}experiments"):

@@ -9,10 +9,7 @@ from y_server.modals import (
 )
 
 
-@app.route(
-    "/follow",
-    methods=["POST"],
-)
+@app.route("/follow", methods=["POST"])
 def add_follow():
     """
     Add a follow/unfollow relationship.
@@ -53,11 +50,32 @@ def add_follow():
 
     return json.dumps({"status": 200})
 
+@app.route("/follow_status", methods=["POST"])
+def follow_status():
+    """
+    Get the follow status between two users.
 
-@app.route(
-    "/followers",
-    methods=["GET"],
-)
+    :return: a json object with the follow status
+    """
+    data = json.loads(request.get_data())
+    user_id = data["user_id"]
+    target_id = data["target"]
+
+    user_id = User_mgmt.query.filter_by(id=user_id).first()
+    target_id = User_mgmt.query.filter_by(id=target_id).first()
+
+    rel = (
+        Follow.query.filter_by(user_id=user_id.id, follower_id=target_id.id)
+        .order_by(Follow.round.desc())
+        .first()
+    )
+
+    if rel is None:
+        return json.dumps({"status": "none"})
+    else:
+        return json.dumps({"status": rel.action})
+
+@app.route("/followers", methods=["GET"])
 def followers():
     """
     Get the followers of a user.
@@ -189,10 +207,33 @@ def __follow_suggestions(rectype, user_id, n_neighbors, leaning_biased):
         if leanings[user] == l_source:
             res[user] = res[user] * leaning_biased
 
-    total = sum(res.values())
-    res = {k: v / total for k, v in res.items() if v > 0}
+    # filter out the users that are already followed
+    followed_ids = __get_current_following(user_id)
+    filtered_res = {k: v for k, v in res.items() if k not in followed_ids and k != user_id}
 
-    return res
+    total = sum(filtered_res.values())
+    filtered_res = {k: v / total for k, v in filtered_res.items() if v > 0}
+
+    return filtered_res
+
+def __get_current_following(user_id):
+    """
+    Get the current following of a user.
+
+    :param user_id: the user id
+    :return: the current following of the user
+    """
+    follows = (Follow.query.filter(Follow.user_id == user_id).order_by(Follow.follower_id, Follow.round.desc()).all())
+
+    followed_ids = set()
+    latest_seen = set()
+
+    for f in follows:
+        if f.follower_id not in latest_seen:
+            latest_seen.add(f.follower_id)
+            if f.action == "follow":
+                followed_ids.add(f.follower_id)
+    return followed_ids
 
 
 def __get_two_hops_neighbors(node_id):
